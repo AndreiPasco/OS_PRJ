@@ -31,7 +31,21 @@ int check_access(const char* path, const char* role, mode_t required_bit_manager
     return 0;
 }
 
+void mode_to_string(mode_t mode, char* str){
+    strcpy(str,"---------");
 
+    if(mode & S_IRUSR) str[0] = 'r';
+    if(mode & S_IWUSR) str[1] = 'w';
+    if(mode & S_IXUSR) str[2] = 'x';
+
+    if(mode & S_IRGRP) str[3] = 'r';
+    if(mode & S_IWGRP) str[4] = 'w';
+    if(mode & S_IXGRP) str[5] = 'x';
+
+    if(mode & S_IROTH) str[6] = 'r';
+    if(mode & S_IWOTH) str[7] = 'w';
+    if(mode & S_IXOTH) str[8] = 'x';
+}
 
 
 int main(int argc, char ** argv){
@@ -47,6 +61,9 @@ int main(int argc, char ** argv){
             user = argv[++i];
         }else if(strcmp(argv[i], "--add") == 0 && i+1 < argc){
             action = "add";
+            district = argv[++i];
+        }else if(strcmp(argv[i], "--list") == 0 && i+1 < argc){
+            action = "list";
             district = argv[++i];
         }
     }
@@ -151,6 +168,59 @@ int main(int argc, char ** argv){
         // ---------------------------------------
 
         printf("The report with the ID %d, saved succesfully!\n", nou.id);
-    }   
+    }else if(strcmp(action,"list") == 0){
+        char filepath[256];
+        sprintf(filepath,"%s/reports.dat", district);
+
+        struct stat st;
+        if(stat(filepath,&st) < 0){
+            perror("Error: reports.dat not found in this district.");
+            return 1;
+        }
+
+        char perm_str[10];
+        mode_to_string(st.st_mode, perm_str);
+
+        printf("\n--- File Info: %s ---\n", filepath);
+        char time_str[26];
+        ctime_r(&st.st_mtime, time_str);
+        time_str[strcspn(time_str, "\n")] = 0; 
+        printf("Permissions: %s | Size: %ld bytes | Last Modified: %s\n", perm_str, st.st_size, time_str);
+        printf("----------------------------------------------------------------------------------\n");
+
+        int fd = open(filepath, O_RDONLY);
+        if (fd < 0) {
+            perror("Error opening reports.dat for reading");
+            return 1;
+        }
+
+        printf("%-6s | %-15s | %-12s | %-8s | %s\n", "ID", "Inspector", "Category", "Severity", "Description");
+        printf("----------------------------------------------------------------------------------\n");
+
+        Report temp;
+        int count = 0;
+        
+        while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
+            printf("%-6d | %-15s | %-12s | %-8d | %s\n", 
+                   temp.id, temp.inspector, temp.category, temp.severity, temp.description);
+            count++;
+        }
+        close(fd);
+
+        if (count == 0) printf("No reports found.\n");
+        else printf("\nTotal: %d reports listed.\n", count);
+        
+        if (strcmp(role, "manager") == 0) {
+            char logpath[256];
+            sprintf(logpath, "%s/logged_district", district);
+            int log_fd = open(logpath, O_WRONLY | O_APPEND);
+            if (log_fd >= 0) {
+                char log_entry[256];
+                int len = sprintf(log_entry, "%ld | %s | %s | list\n", time(NULL), role, user);
+                write(log_fd, log_entry, len);
+                close(log_fd);
+            }
+        }
+    }
     return 0;
 }
