@@ -49,6 +49,8 @@ void mode_to_string(mode_t mode, char* str){
 
 
 int main(int argc, char ** argv){
+    char* filter_field = NULL; 
+    char* filter_value = NULL;
     char* role = NULL;
     char* user = NULL;
     char* action = NULL;
@@ -75,6 +77,11 @@ int main(int argc, char ** argv){
             action = "remove_report";
             district = argv[++i];
             target_id_str = argv[++i];
+        }else if(strcmp(argv[i], "--filter") == 0 && i+3 < argc){
+            action = "filter";
+            district = argv[++i];
+            filter_field = argv[++i];
+            filter_value = argv[++i];
         }
     }
 
@@ -359,6 +366,68 @@ int main(int argc, char ** argv){
             if (log_fd >= 0) {
                 char log_entry[256];
                 int len = sprintf(log_entry, "%ld | %s | %s | remove %d\n", time(NULL), role, user, target_id);
+                write(log_fd, log_entry, len);
+                close(log_fd);
+            }
+        }
+    }else if (strcmp(action, "filter") == 0) {
+        if (!filter_field || !filter_value) {
+            printf("Eroare: Argumente incomplete. Folosire: --filter <district> <camp> <valoare>\n");
+            printf("Campuri suportate: category, severity, inspector\n");
+            return 1;
+        }
+
+        char filepath[256];
+        sprintf(filepath, "%s/reports.dat", district);
+
+        int fd = open(filepath, O_RDONLY);
+        if (fd < 0) {
+            perror("Error opening reports.dat for filtering");
+            return 1;
+        }
+
+        printf("\n--- Rezultate Filtrare: [%s == %s] ---\n", filter_field, filter_value);
+        printf("%-6s | %-15s | %-12s | %-8s | %s\n", "ID", "Inspector", "Category", "Severity", "Description");
+        printf("----------------------------------------------------------------------------------\n");
+
+        Report temp;
+        int count = 0;
+        
+        while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
+            int match = 0;
+
+            // Logica AI pentru filtrare dinamica
+            if (strcmp(filter_field, "category") == 0) {
+                if (strcmp(temp.category, filter_value) == 0) match = 1;
+            } 
+            else if (strcmp(filter_field, "severity") == 0) {
+                if (temp.severity == atoi(filter_value)) match = 1; // Convertim string-ul la numar
+            } 
+            else if (strcmp(filter_field, "inspector") == 0) {
+                if (strcmp(temp.inspector, filter_value) == 0) match = 1;
+            }
+
+            // Daca a fost gasita o potrivire, afisam raportul
+            if (match) {
+                printf("%-6d | %-15s | %-12s | %-8d | %s\n", 
+                       temp.id, temp.inspector, temp.category, temp.severity, temp.description);
+                count++;
+            }
+        }
+        close(fd);
+
+        if (count == 0) printf("Nu s-au gasit rapoarte care sa corespunda criteriului.\n");
+        else printf("\nTotal: %d rapoarte gasite.\n", count);
+
+        // Logare (doar pentru manager)
+        if (strcmp(role, "manager") == 0) {
+            char logpath[256];
+            sprintf(logpath, "%s/logged_district", district);
+            int log_fd = open(logpath, O_WRONLY | O_APPEND);
+            if (log_fd >= 0) {
+                char log_entry[256];
+                int len = sprintf(log_entry, "%ld | %s | %s | filter %s %s\n", 
+                                  time(NULL), role, user, filter_field, filter_value);
                 write(log_fd, log_entry, len);
                 close(log_fd);
             }
