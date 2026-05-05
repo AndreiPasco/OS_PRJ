@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/wait.h>
+#include<signal.h>
+
 
 
 typedef struct{
@@ -109,12 +111,33 @@ int action_add(char* district, char* role, char* user) {
         return 1; 
     }
 
+    int monitor_notified = 0;
+    int pid_fd = open(".monitor_pid",O_RDONLY);
+    if(pid_fd >= 0){
+        char pid_buf[32];
+        memset(pid_buf,0,sizeof(pid_buf));
+        int bytes_read = read(pid_fd,pid_buf,sizeof((pid_buf) - 1));
+        if(bytes_read > 0){
+            pid_t monitor_pid = atoi(pid_buf);
+            if(monitor_pid > 0){
+                if(kill(monitor_pid,SIGUSR1) == 0){
+                    monitor_notified = 1;
+                }
+            }
+        }
+    }
+
     int log_fd = open(logpath, O_CREAT | O_WRONLY | O_APPEND, 0644);
-    if(log_fd >= 0 ){
-        char log_entry[256];
-        int len = sprintf(log_entry, "%ld | %s | %s | add\n", nou.timestamp, role,user); 
-        write(log_fd, log_entry, len);
-        chmod(logpath, 0644); 
+    if(log_fd >= 0){
+        char log_entry[512];
+        if(monitor_notified){
+            int len = sprintf(log_entry, "%ld | %s | %s | add | Notificare Monitor : SUCCESS!\n", nou.timestamp,role,user);
+            write(log_fd,log_entry,len);
+        }else{
+            int len = sprintf(log_entry,"%ld | %s | %s | add | Notificare Monitor : FAILED!\n",nou.timestamp,role,user);
+            write(log_fd,log_entry,len);
+        }
+        chmod(logpath, 0644);
         close(log_fd);
     }
 
@@ -419,7 +442,7 @@ int main(int argc, char ** argv){
     char* district = NULL;
     char* target_id_str = NULL;
 
-    // 1. Parsarea argumentelor
+    
     for(int i = 1; i < argc; i++){
         if(strcmp(argv[i], "--role") == 0 && i+1 < argc){
             role = argv[++i];
@@ -439,7 +462,10 @@ int main(int argc, char ** argv){
             action = "remove_report";
             district = argv[++i];
             target_id_str = argv[++i];
-        }else if(strcmp(argv[i], "--filter") == 0 && i+3 < argc){
+        }else if(strcmp(argv[i], "--remove_district") == 0 && i+1 < argc){
+            action = "remove_district";
+            district = argv[++i];
+        }else if(strcmp(argv[i],"--filter") == 0 && i + 3  < argc){
             action = "filter";
             district = argv[++i];
             filter_field = argv[++i];
@@ -447,14 +473,13 @@ int main(int argc, char ** argv){
         }
     }
 
-    // 2. Validarea argumentelor de baza
     if(!role || !user || !action || !district){
         printf("Eroare de sintaxa! Folosire corecta : \n");
         printf("./city-manager --role manager --user andrei --add downtown\n");
         return 1;
     }
 
-    // 3. Apelarea logicii specifice (Dispatcher)
+    
     if(strcmp(action,"add") == 0){
         return action_add(district, role, user);
     }
@@ -467,8 +492,10 @@ int main(int argc, char ** argv){
     else if (strcmp(action, "remove_report") == 0) {
         return action_remove(district, target_id_str, role, user);
     }
-    else if (strcmp(action, "filter") == 0) {
-        return action_filter(district, filter_field, filter_value, role, user);
+    else if (strcmp(action, "remove_district") == 0) {
+        return remove_district(district,role,user);
+    }else if(strcmp(action,"filter") == 0){
+        return action_filter(district,filter_field,filter_value,role,user);
     }
 
     return 0;
