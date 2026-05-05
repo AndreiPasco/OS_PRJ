@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/wait.h>
+
 
 typedef struct{
     int id;
@@ -370,6 +372,41 @@ int action_filter(char* district, char* filter_field, char* filter_value, char* 
     }
     return 0;
 }
+
+int remove_district(char* district, char* role, char* user){
+    if(strcmp(role, "manager") != 0){
+        printf("Access denied. Only managers can remove districts.");
+        return 1;
+    }
+
+    char symlink_name[256];
+    sprintf(symlink_name,"active_reports-%s", district);
+
+    printf("Removing the district...\n");
+
+    pid_t pid = fork();
+
+    if(pid < 0){
+        perror("Error creating process.\n");
+        return 1;
+    }else if(pid == 0){
+        execlp("rm", "rm","-rf", district,symlink_name, NULL);
+
+        perror("Error executing command.");
+        exit(1);
+    }else{
+        int status;
+        wait(&status);
+
+        if(WIFEXITED(status) && WEXITSTATUS(status)==0){
+            printf("✅ District %s is removed.\n", district);
+        }else{
+            printf("❌ Erorr removing the district.\n");
+        }
+    }
+    return 0;   
+}
+
 
 //main//
 
