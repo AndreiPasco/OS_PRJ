@@ -18,11 +18,11 @@ typedef struct{
     char description[128];
 }Report;
 
+
+
 int check_access(const char* path, const char* role, mode_t required_bit_manager, mode_t required_bit_inspector){
     struct stat st;
-
     if(stat(path, &st) < 0) return 1;
-
     if(strcmp(role, "manager") == 0){
         return (st.st_mode & required_bit_manager);
     }else if(strcmp(role,"inspector") == 0){
@@ -33,20 +33,345 @@ int check_access(const char* path, const char* role, mode_t required_bit_manager
 
 void mode_to_string(mode_t mode, char* str){
     strcpy(str,"---------");
-
     if(mode & S_IRUSR) str[0] = 'r';
     if(mode & S_IWUSR) str[1] = 'w';
     if(mode & S_IXUSR) str[2] = 'x';
-
     if(mode & S_IRGRP) str[3] = 'r';
     if(mode & S_IWGRP) str[4] = 'w';
     if(mode & S_IXGRP) str[5] = 'x';
-
     if(mode & S_IROTH) str[6] = 'r';
     if(mode & S_IWOTH) str[7] = 'w';
     if(mode & S_IXOTH) str[8] = 'x';
 }
 
+// --- FUNCTII PENTRU COMENZI ---
+
+int action_add(char* district, char* role, char* user) {
+    char filepath[256];
+    sprintf(filepath, "%s/reports.dat", district);
+
+    if(!check_access(district, role, S_IWUSR, S_IXGRP)){
+        printf("Error : Role %s does not have write/exec permissions on district directory!\n" , role);
+        return 1;
+    }
+
+    printf("Modul Adaugare Raport ---\n");
+    printf("District : %s | Rol : %s | User : %s\n\n", district,role,user);
+
+    mkdir(district, 0750);
+    chmod(district, 0750);
+
+    char cfg_path[256];
+    sprintf(cfg_path, "%s/district.cfg", district);
+    int cfg_fd = open(cfg_path, O_CREAT | O_WRONLY | O_EXCL, 0640);
+    if(cfg_fd >= 0){
+        write(cfg_fd, "severity_threshold=2\n", 21);
+        chmod(cfg_path, 0640);
+        close(cfg_fd);
+    }
+
+    Report nou;
+    memset(&nou,0,sizeof(Report));
+
+    nou.id = (int)time(NULL) % 10000;
+    strncpy(nou.inspector,user,31);
+    nou.timestamp = time(NULL);
+
+    printf("Reading from keyboard : \n");
+    printf("Enter the x coordinate (lat) : ");
+    scanf("%f", &nou.lat);
+    printf("Enter the y coordinate (lon) : ");
+    scanf("%f", &nou.lon);
+    printf("Enter category (road,lighting,flooding) : ");
+    scanf("%31s", nou.category);
+    printf("Severity (1-Minor, 2-Moderate, 3-Critical) : ");
+    scanf("%d", &nou.severity);
+    printf("Short description : ");
+    getchar();
+    fgets(nou.description,127,stdin);
+    nou.description[strcspn(nou.description,"\n")] = 0; 
+
+    int fd = open(filepath, O_CREAT | O_WRONLY | O_APPEND, 0664);
+    if(fd < 0){
+        perror("Error opening reports.dat\n");
+        return 1;
+    }
+    write(fd, &nou, sizeof(Report));
+    chmod(filepath, 0664);
+    close(fd);
+
+    char logpath[256];
+    sprintf(logpath, "%s/logged_district", district);
+    if (strcmp(role, "inspector") == 0) {
+        printf("Access Denied: Inspectors are not allowed to write to the operation log!\n");
+        return 1; 
+    }
+
+    int log_fd = open(logpath, O_CREAT | O_WRONLY | O_APPEND, 0644);
+    if(log_fd >= 0 ){
+        char log_entry[256];
+        int len = sprintf(log_entry, "%ld | %s | %s | add\n", nou.timestamp, role,user); 
+        write(log_fd, log_entry, len);
+        chmod(logpath, 0644); 
+        close(log_fd);
+    }
+
+    char symlink_name[256];
+    sprintf(symlink_name, "active_reports-%s", district);
+    unlink(symlink_name); 
+    if (symlink(filepath, symlink_name) == 0) {
+        printf("Symlink created: %s -> %s\n", symlink_name, filepath);
+    }
+
+    printf("The report with the ID %d, saved succesfully!\n", nou.id);
+    return 0;
+}
+
+int action_list(char* district, char* role, char* user) {
+    char filepath[256];
+    sprintf(filepath,"%s/reports.dat", district);
+
+    struct stat st;
+    if(stat(filepath,&st) < 0){
+        perror("Error: reports.dat not found in this district.");
+        return 1;
+    }
+
+    char perm_str[10];
+    mode_to_string(st.st_mode, perm_str);
+
+    printf("\n--- File Info: %s ---\n", filepath);
+    char time_str[26];
+    ctime_r(&st.st_mtime, time_str);
+    time_str[strcspn(time_str, "\n")] = 0; 
+    printf("Permissions: %s | Size: %ld bytes | Last Modified: %s\n", perm_str, st.st_size, time_str);
+    printf("----------------------------------------------------------------------------------\n");
+
+    int fd = open(filepath, O_RDONLY);
+    if (fd < 0) {
+        perror("Error opening reports.dat for reading");
+        return 1;
+    }
+
+    printf("%-6s | %-15s | %-12s | %-8s | %s\n", "ID", "Inspector", "Category", "Severity", "Description");
+    printf("----------------------------------------------------------------------------------\n");
+
+    Report temp;
+    int count = 0;
+    
+    while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
+        printf("%-6d | %-15s | %-12s | %-8d | %s\n", 
+               temp.id, temp.inspector, temp.category, temp.severity, temp.description);
+        count++;
+    }
+    close(fd);
+
+    if (count == 0) printf("No reports found.\n");
+    else printf("\nTotal: %d reports listed.\n", count);
+    
+    if (strcmp(role, "manager") == 0) {
+        char logpath[256];
+        sprintf(logpath, "%s/logged_district", district);
+        int log_fd = open(logpath, O_WRONLY | O_APPEND);
+        if (log_fd >= 0) {
+            char log_entry[256];
+            int len = sprintf(log_entry, "%ld | %s | %s | list\n", time(NULL), role, user);
+            write(log_fd, log_entry, len);
+            close(log_fd);
+        }
+    }
+    return 0;
+}
+
+int action_view(char* district, char* target_id_str, char* role, char* user) {
+    if (!target_id_str) {
+        printf("Eroare: Lipseste ID-ul raportului. Folosire: --view <district> <id>\n");
+        return 1;
+    }
+
+    int target_id = atoi(target_id_str); 
+    char filepath[256];
+    sprintf(filepath, "%s/reports.dat", district);
+
+    int fd = open(filepath, O_RDONLY);
+    if (fd < 0) {
+        perror("Error opening reports.dat");
+        return 1;
+    }
+
+    Report temp;
+    int found = 0;
+    
+    while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
+        if (temp.id == target_id) {
+            found = 1;
+            printf("\n--- Report Details (ID: %d) ---\n", temp.id);
+            printf("Inspector:   %s\n", temp.inspector);
+            printf("Location:    Lat %.4f, Lon %.4f\n", temp.lat, temp.lon);
+            printf("Category:    %s\n", temp.category);
+            printf("Severity:    %d\n", temp.severity);
+            
+            char time_str[26];
+            ctime_r(&temp.timestamp, time_str);
+            time_str[strcspn(time_str, "\n")] = 0;
+            printf("Reported At: %s\n", time_str);
+            
+            printf("Description: %s\n", temp.description);
+            printf("-------------------------------\n");
+            break; 
+        }
+    }
+    close(fd);
+
+    if (!found) {
+        printf("Raportul cu ID %d nu a fost gasit in districtul %s.\n", target_id, district);
+    } else {
+        if (strcmp(role, "manager") == 0) {
+            char logpath[256];
+            sprintf(logpath, "%s/logged_district", district);
+            int log_fd = open(logpath, O_WRONLY | O_APPEND);
+            if (log_fd >= 0) {
+                char log_entry[256];
+                int len = sprintf(log_entry, "%ld | %s | %s | view %d\n", time(NULL), role, user, target_id);
+                write(log_fd, log_entry, len);
+                close(log_fd);
+            }
+        }
+    }
+    return 0;
+}
+
+int action_remove(char* district, char* target_id_str, char* role, char* user) {
+    if (!target_id_str) {
+        printf("Eroare: Lipseste ID-ul. Folosire: --remove_report <district> <id>\n");
+        return 1;
+    }
+    
+    if (strcmp(role, "manager") != 0) {
+        printf("Access Denied: Only managers can remove reports!\n");
+        return 1;
+    }
+
+    int target_id = atoi(target_id_str);
+    char filepath[256];
+    sprintf(filepath, "%s/reports.dat", district);
+
+    int fd = open(filepath, O_RDWR);
+    if (fd < 0) {
+        perror("Error opening reports.dat");
+        return 1;
+    }
+
+    Report temp;
+    int found = 0;
+
+    while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
+        if (temp.id == target_id) {
+            found = 1;
+            break; 
+        }
+    }
+
+    if (!found) {
+        printf("Raportul cu ID %d nu a fost gasit in districtul %s.\n", target_id, district);
+        close(fd);
+    } else {
+        off_t read_pos = lseek(fd, 0, SEEK_CUR); 
+        off_t write_pos = read_pos - sizeof(Report); 
+        
+        while (1) {
+            lseek(fd, read_pos, SEEK_SET); 
+            int bytes_read = read(fd, &temp, sizeof(Report));
+            if (bytes_read != sizeof(Report)) break; 
+            
+            lseek(fd, write_pos, SEEK_SET); 
+            write(fd, &temp, sizeof(Report));
+            
+            read_pos += sizeof(Report);
+            write_pos += sizeof(Report);
+        }
+        
+        ftruncate(fd, write_pos);
+        close(fd);
+        
+        printf("✅ Raportul cu ID %d a fost sters complet, iar fisierul a fost rearanjat.\n", target_id);
+
+        char logpath[256];
+        sprintf(logpath, "%s/logged_district", district);
+        int log_fd = open(logpath, O_WRONLY | O_APPEND);
+        if (log_fd >= 0) {
+            char log_entry[256];
+            int len = sprintf(log_entry, "%ld | %s | %s | remove %d\n", time(NULL), role, user, target_id);
+            write(log_fd, log_entry, len);
+            close(log_fd);
+        }
+    }
+    return 0;
+}
+
+int action_filter(char* district, char* filter_field, char* filter_value, char* role, char* user) {
+    if (!filter_field || !filter_value) {
+        printf("Eroare: Argumente incomplete. Folosire: --filter <district> <camp> <valoare>\n");
+        printf("Campuri suportate: category, severity, inspector\n");
+        return 1;
+    }
+
+    char filepath[256];
+    sprintf(filepath, "%s/reports.dat", district);
+
+    int fd = open(filepath, O_RDONLY);
+    if (fd < 0) {
+        perror("Error opening reports.dat for filtering");
+        return 1;
+    }
+
+    printf("\n--- Rezultate Filtrare: [%s == %s] ---\n", filter_field, filter_value);
+    printf("%-6s | %-15s | %-12s | %-8s | %s\n", "ID", "Inspector", "Category", "Severity", "Description");
+    printf("----------------------------------------------------------------------------------\n");
+
+    Report temp;
+    int count = 0;
+    
+    while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
+        int match = 0;
+        
+        if (strcmp(filter_field, "category") == 0) {
+            if (strcmp(temp.category, filter_value) == 0) match = 1;
+        } 
+        else if (strcmp(filter_field, "severity") == 0) {
+            if (temp.severity == atoi(filter_value)) match = 1; 
+        } 
+        else if (strcmp(filter_field, "inspector") == 0) {
+            if (strcmp(temp.inspector, filter_value) == 0) match = 1;
+        }
+
+        if (match) {
+            printf("%-6d | %-15s | %-12s | %-8d | %s\n", 
+                   temp.id, temp.inspector, temp.category, temp.severity, temp.description);
+            count++;
+        }
+    }
+    close(fd);
+
+    if (count == 0) printf("Nu s-au gasit rapoarte care sa corespunda criteriului.\n");
+    else printf("\nTotal: %d rapoarte gasite.\n", count);
+
+    if (strcmp(role, "manager") == 0) {
+        char logpath[256];
+        sprintf(logpath, "%s/logged_district", district);
+        int log_fd = open(logpath, O_WRONLY | O_APPEND);
+        if (log_fd >= 0) {
+            char log_entry[256];
+            int len = sprintf(log_entry, "%ld | %s | %s | filter %s %s\n", 
+                              time(NULL), role, user, filter_field, filter_value);
+            write(log_fd, log_entry, len);
+            close(log_fd);
+        }
+    }
+    return 0;
+}
+
+//main//
 
 int main(int argc, char ** argv){
     char* filter_field = NULL; 
@@ -57,7 +382,7 @@ int main(int argc, char ** argv){
     char* district = NULL;
     char* target_id_str = NULL;
 
-
+    // 1. Parsarea argumentelor
     for(int i = 1; i < argc; i++){
         if(strcmp(argv[i], "--role") == 0 && i+1 < argc){
             role = argv[++i];
@@ -85,353 +410,29 @@ int main(int argc, char ** argv){
         }
     }
 
+    // 2. Validarea argumentelor de baza
     if(!role || !user || !action || !district){
         printf("Eroare de sintaxa! Folosire corecta : \n");
         printf("./city-manager --role manager --user andrei --add downtown\n");
         return 1;
     }
 
+    // 3. Apelarea logicii specifice (Dispatcher)
     if(strcmp(action,"add") == 0){
-
-        char filepath[256];
-        sprintf(filepath, "%s/reports.dat", district);
-
-        if(!check_access(district, role, S_IWUSR, S_IXGRP)){
-            printf("Error : Role %s does not have write/exec permissions on district directory!\n" , role);
-            return 1;
-        }
-
-
-        printf("Modul Adaugare Raport ---\n");
-        printf("District : %s | Rol : %s | User : %s\n\n", district,role,user);
-
-        mkdir(district, 0750);
-        chmod(district, 0750);
-
-        // --- NOU: Crearea fisierului district.cfg (0640) ---
-        char cfg_path[256];
-        sprintf(cfg_path, "%s/district.cfg", district);
-        int cfg_fd = open(cfg_path, O_CREAT | O_WRONLY | O_EXCL, 0640);
-        if(cfg_fd >= 0){
-            write(cfg_fd, "severity_threshold=2\n", 21);
-            chmod(cfg_path, 0640);
-            close(cfg_fd);
-        }
-        // ---------------------------------------------------
-
-        Report nou;
-        memset(&nou,0,sizeof(Report));
-
-        nou.id = (int)time(NULL) % 10000;
-        strncpy(nou.inspector,user,31);
-        nou.timestamp = time(NULL);
-
-        printf("Reading from keyboard : \n");
-
-        printf("Enter the x coordinate (lat) : ");
-        scanf("%f", &nou.lat);
-
-        printf("Enter the y coordinate (lon) : ");
-        scanf("%f", &nou.lon);
-
-        printf("Enter category (road,lighting,flooding) : ");
-        scanf("%31s", nou.category);
-
-        printf("Severity (1-Minor, 2-Moderate, 3-Critical) : ");
-        scanf("%d", &nou.severity);
-
-        printf("Short description : ");
-        getchar();
-        fgets(nou.description,127,stdin);
-        nou.description[strcspn(nou.description,"\n")] = 0; // eliminate the enter
-
-
-        int fd = open(filepath, O_CREAT | O_WRONLY | O_APPEND, 0664);
-        if(fd < 0){
-            perror("Error opening reports.dat\n");
-            return 1;
-        }
-
-        write(fd, &nou, sizeof(Report));
-        chmod(filepath, 0664);
-        close(fd);
-
-        // INAINTE DE LOG: Verificam daca rolul are voie sa scrie in log [cite: 32, 36]
-        char logpath[256];
-        sprintf(logpath, "%s/logged_district", district);
-        if (strcmp(role, "inspector") == 0) {
-            printf("Access Denied: Inspectors are not allowed to write to the operation log!\n");
-            // Nota: In realitate, poti alege sa continui add-ul dar sa nu scrii logul, 
-            // sau sa opresti totul. PDF-ul sugereaza refuzul actiunii.
-            return 1; 
-        }
-
-        int log_fd = open(logpath, O_CREAT | O_WRONLY | O_APPEND, 0644);
-        if(log_fd >= 0 ){
-            char log_entry[256];
-            int len = sprintf(log_entry, "%ld | %s | %s | add\n", nou.timestamp, role,user); 
-            write(log_fd, log_entry, len);
-            chmod(logpath, 0644); // Corectat la 0644 conform PDF
-            close(log_fd);
-        }
-
-        // --- NOU: Crearea Link-ului Simbolic ---
-        char symlink_name[256];
-        sprintf(symlink_name, "active_reports-%s", district);
-        unlink(symlink_name); // Sterge link-ul vechi daca exista pentru a evita erori
-        if (symlink(filepath, symlink_name) == 0) {
-            printf("Symlink created: %s -> %s\n", symlink_name, filepath);
-        }
-        // ---------------------------------------
-
-        printf("The report with the ID %d, saved succesfully!\n", nou.id);
-    }else if(strcmp(action,"list") == 0){
-        char filepath[256];
-        sprintf(filepath,"%s/reports.dat", district);
-
-        struct stat st;
-        if(stat(filepath,&st) < 0){
-            perror("Error: reports.dat not found in this district.");
-            return 1;
-        }
-
-        char perm_str[10];
-        mode_to_string(st.st_mode, perm_str);
-
-        printf("\n--- File Info: %s ---\n", filepath);
-        char time_str[26];
-        ctime_r(&st.st_mtime, time_str);
-        time_str[strcspn(time_str, "\n")] = 0; 
-        printf("Permissions: %s | Size: %ld bytes | Last Modified: %s\n", perm_str, st.st_size, time_str);
-        printf("----------------------------------------------------------------------------------\n");
-
-        int fd = open(filepath, O_RDONLY);
-        if (fd < 0) {
-            perror("Error opening reports.dat for reading");
-            return 1;
-        }
-
-        printf("%-6s | %-15s | %-12s | %-8s | %s\n", "ID", "Inspector", "Category", "Severity", "Description");
-        printf("----------------------------------------------------------------------------------\n");
-
-        Report temp;
-        int count = 0;
-        
-        while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
-            printf("%-6d | %-15s | %-12s | %-8d | %s\n", 
-                   temp.id, temp.inspector, temp.category, temp.severity, temp.description);
-            count++;
-        }
-        close(fd);
-
-        if (count == 0) printf("No reports found.\n");
-        else printf("\nTotal: %d reports listed.\n", count);
-        
-        if (strcmp(role, "manager") == 0) {
-            char logpath[256];
-            sprintf(logpath, "%s/logged_district", district);
-            int log_fd = open(logpath, O_WRONLY | O_APPEND);
-            if (log_fd >= 0) {
-                char log_entry[256];
-                int len = sprintf(log_entry, "%ld | %s | %s | list\n", time(NULL), role, user);
-                write(log_fd, log_entry, len);
-                close(log_fd);
-            }
-        }
-    }else if (strcmp(action, "view") == 0) {
-        if (!target_id_str) {
-            printf("Eroare: Lipseste ID-ul raportului. Folosire: --view <district> <id>\n");
-            return 1;
-        }
-
-        int target_id = atoi(target_id_str); // Transformam string-ul in numar (integer)
-        char filepath[256];
-        sprintf(filepath, "%s/reports.dat", district);
-
-        int fd = open(filepath, O_RDONLY);
-        if (fd < 0) {
-            perror("Error opening reports.dat");
-            return 1;
-        }
-
-        Report temp;
-        int found = 0;
-        
-        // Citim binarul pana gasim raportul cu ID-ul cerut
-        while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
-            if (temp.id == target_id) {
-                found = 1;
-                printf("\n--- Report Details (ID: %d) ---\n", temp.id);
-                printf("Inspector:   %s\n", temp.inspector);
-                printf("Location:    Lat %.4f, Lon %.4f\n", temp.lat, temp.lon);
-                printf("Category:    %s\n", temp.category);
-                printf("Severity:    %d\n", temp.severity);
-                
-                char time_str[26];
-                ctime_r(&temp.timestamp, time_str);
-                time_str[strcspn(time_str, "\n")] = 0;
-                printf("Reported At: %s\n", time_str);
-                
-                printf("Description: %s\n", temp.description);
-                printf("-------------------------------\n");
-                break; // Am gasit ce cautam, ne oprim din citit
-            }
-        }
-        close(fd);
-
-        if (!found) {
-            printf("Raportul cu ID %d nu a fost gasit in districtul %s.\n", target_id, district);
-        } else {
-            // Logam actiunea DOAR daca e manager (inspectorii nu au acces la write in log)
-            if (strcmp(role, "manager") == 0) {
-                char logpath[256];
-                sprintf(logpath, "%s/logged_district", district);
-                int log_fd = open(logpath, O_WRONLY | O_APPEND);
-                if (log_fd >= 0) {
-                    char log_entry[256];
-                    int len = sprintf(log_entry, "%ld | %s | %s | view %d\n", time(NULL), role, user, target_id);
-                    write(log_fd, log_entry, len);
-                    close(log_fd);
-                }
-            }
-        }
-    }else if (strcmp(action, "remove_report") == 0) {
-        if (!target_id_str) {
-            printf("Eroare: Lipseste ID-ul. Folosire: --remove_report <district> <id>\n");
-            return 1;
-        }
-        
-        // RESTRICȚIE: Doar Managerul are voie sa stearga
-        if (strcmp(role, "manager") != 0) {
-            printf("Access Denied: Only managers can remove reports!\n");
-            return 1;
-        }
-
-        int target_id = atoi(target_id_str);
-        char filepath[256];
-        sprintf(filepath, "%s/reports.dat", district);
-
-        // Deschidem OBLIGATORIU cu O_RDWR (Read & Write) ca sa putem citi si suprascrie in acelasi timp
-        int fd = open(filepath, O_RDWR);
-        if (fd < 0) {
-            perror("Error opening reports.dat");
-            return 1;
-        }
-
-        Report temp;
-        int found = 0;
-
-        // 1. Cautam raportul
-        while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
-            if (temp.id == target_id) {
-                found = 1;
-                break; // Am gasit! Ne oprim din citit.
-            }
-        }
-
-        if (!found) {
-            printf("Raportul cu ID %d nu a fost gasit in districtul %s.\n", target_id, district);
-            close(fd);
-        } else {
-            // 2. Procesul de Shift (Mutare spre stanga)
-            // Cursorul 'fd' este fix DUPĂ raportul gasit
-            off_t read_pos = lseek(fd, 0, SEEK_CUR); 
-            off_t write_pos = read_pos - sizeof(Report); // Ne ducem inapoi peste el ca sa-l stergem
-            
-            while (1) {
-                // Mergem sa citim urmatorul raport
-                lseek(fd, read_pos, SEEK_SET); 
-                int bytes_read = read(fd, &temp, sizeof(Report));
-                if (bytes_read != sizeof(Report)) break; // Am ajuns la sfarsitul fisierului, ne oprim
-                
-                // Ne intoarcem la pozitia de scriere si suprascriem
-                lseek(fd, write_pos, SEEK_SET); 
-                write(fd, &temp, sizeof(Report));
-                
-                // Avansam indicii pentru urmatorul bloc
-                read_pos += sizeof(Report);
-                write_pos += sizeof(Report);
-            }
-            
-            // 3. FTRUNCATE: Taiem coada fisierului (taiem exact dupa ultimul raport valid)
-            ftruncate(fd, write_pos);
-            close(fd);
-            
-            printf("✅ Raportul cu ID %d a fost sters complet, iar fisierul a fost rearanjat.\n", target_id);
-
-            // 4. Logam actiunea
-            char logpath[256];
-            sprintf(logpath, "%s/logged_district", district);
-            int log_fd = open(logpath, O_WRONLY | O_APPEND);
-            if (log_fd >= 0) {
-                char log_entry[256];
-                int len = sprintf(log_entry, "%ld | %s | %s | remove %d\n", time(NULL), role, user, target_id);
-                write(log_fd, log_entry, len);
-                close(log_fd);
-            }
-        }
-    }else if (strcmp(action, "filter") == 0) {
-        if (!filter_field || !filter_value) {
-            printf("Eroare: Argumente incomplete. Folosire: --filter <district> <camp> <valoare>\n");
-            printf("Campuri suportate: category, severity, inspector\n");
-            return 1;
-        }
-
-        char filepath[256];
-        sprintf(filepath, "%s/reports.dat", district);
-
-        int fd = open(filepath, O_RDONLY);
-        if (fd < 0) {
-            perror("Error opening reports.dat for filtering");
-            return 1;
-        }
-
-        printf("\n--- Rezultate Filtrare: [%s == %s] ---\n", filter_field, filter_value);
-        printf("%-6s | %-15s | %-12s | %-8s | %s\n", "ID", "Inspector", "Category", "Severity", "Description");
-        printf("----------------------------------------------------------------------------------\n");
-
-        Report temp;
-        int count = 0;
-        
-        while (read(fd, &temp, sizeof(Report)) == sizeof(Report)) {
-            int match = 0;
-
-            // Logica AI pentru filtrare dinamica
-            if (strcmp(filter_field, "category") == 0) {
-                if (strcmp(temp.category, filter_value) == 0) match = 1;
-            } 
-            else if (strcmp(filter_field, "severity") == 0) {
-                if (temp.severity == atoi(filter_value)) match = 1; // Convertim string-ul la numar
-            } 
-            else if (strcmp(filter_field, "inspector") == 0) {
-                if (strcmp(temp.inspector, filter_value) == 0) match = 1;
-            }
-
-            // Daca a fost gasita o potrivire, afisam raportul
-            if (match) {
-                printf("%-6d | %-15s | %-12s | %-8d | %s\n", 
-                       temp.id, temp.inspector, temp.category, temp.severity, temp.description);
-                count++;
-            }
-        }
-        close(fd);
-
-        if (count == 0) printf("Nu s-au gasit rapoarte care sa corespunda criteriului.\n");
-        else printf("\nTotal: %d rapoarte gasite.\n", count);
-
-        // Logare (doar pentru manager)
-        if (strcmp(role, "manager") == 0) {
-            char logpath[256];
-            sprintf(logpath, "%s/logged_district", district);
-            int log_fd = open(logpath, O_WRONLY | O_APPEND);
-            if (log_fd >= 0) {
-                char log_entry[256];
-                int len = sprintf(log_entry, "%ld | %s | %s | filter %s %s\n", 
-                                  time(NULL), role, user, filter_field, filter_value);
-                write(log_fd, log_entry, len);
-                close(log_fd);
-            }
-        }
+        return action_add(district, role, user);
     }
+    else if(strcmp(action,"list") == 0){
+        return action_list(district, role, user);
+    }
+    else if (strcmp(action, "view") == 0) {
+        return action_view(district, target_id_str, role, user);
+    }
+    else if (strcmp(action, "remove_report") == 0) {
+        return action_remove(district, target_id_str, role, user);
+    }
+    else if (strcmp(action, "filter") == 0) {
+        return action_filter(district, filter_field, filter_value, role, user);
+    }
+
     return 0;
 }
