@@ -10,7 +10,6 @@
 #include<signal.h>
 
 
-
 typedef struct{
     int id;
     char inspector[32];
@@ -48,7 +47,7 @@ void mode_to_string(mode_t mode, char* str){
     if(mode & S_IXOTH) str[8] = 'x';
 }
 
-// --- FUNCTII PENTRU COMENZI ---
+// functii comenzi
 
 int action_add(char* district, char* role, char* user) {
     char filepath[256];
